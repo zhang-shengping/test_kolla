@@ -14,9 +14,10 @@
 
 from jinja2 import contextfilter
 
-
+# NOTE(pzhang): a filter need to add into Jinja env
 @contextfilter
 def customizable(context, val_list, call_type):
+    # import pdb; pdb.set_trace()
     name = context['image_name'].replace("-", "_") + "_" + call_type + "_"
     if name + "override" in context:
         return context[name + "override"]

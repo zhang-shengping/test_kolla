@@ -205,6 +205,7 @@ class ArchivingError(Exception):
 def join_many(threads):
     try:
         yield
+        LOG.debug('************************************************')
         for t in threads:
             t.join()
     except KeyboardInterrupt:
@@ -623,6 +624,7 @@ class WorkerThread(threading.Thread):
 
     def run(self):
         while not self.should_stop:
+            # NOTE(pzhang): task is object of BuildTask
             task = self.queue.get()
             if task is self.tombstone:
                 # Ensure any other threads also get the tombstone.
@@ -656,6 +658,7 @@ class KollaWorker(object):
 
     def __init__(self, conf):
         self.conf = conf
+        # NOTE(pzhang): /root/kolla/docker
         self.images_dir = self._get_images_dir()
         self.registry = conf.registry
         if self.registry:
@@ -668,8 +671,12 @@ class KollaWorker(object):
         self.tag = conf.tag
         self.base_arch = conf.base_arch
         self.images = list()
+        # NOTE(pzhang)
+        # Comma separated list of .rpm or .repo file(s) or URL(s) to install
+        # before building containers (list value)
         rpm_setup_config = ([repo_file for repo_file in
                              conf.rpm_setup_config if repo_file is not None])
+        # NOTE(pzhang): generator docker RUN to do rpm
         self.rpm_setup = self.build_rpm_setup(rpm_setup_config)
 
         rh_base = ['centos', 'oraclelinux', 'rhel']
@@ -699,16 +706,20 @@ class KollaWorker(object):
             )
 
         self.image_prefix = self.base + '-' + self.install_type + '-'
-
+        # NOTE(pzhang): 
+        # Build only images matching regex and its dependencies
         self.regex = conf.regex
         self.image_statuses_bad = dict()
         self.image_statuses_good = dict()
         self.image_statuses_unmatched = dict()
         self.image_statuses_skipped = dict()
+        # NOTE(pzhang):
+        # Content of the maintainer label
         self.maintainer = conf.maintainer
 
         docker_kwargs = docker.utils.kwargs_from_env()
         try:
+            # NOTE(pzhang): Create a docker client
             self.dc = docker.APIClient(version='auto', **docker_kwargs)
         except docker.errors.DockerException as e:
             self.dc = None
@@ -808,6 +819,7 @@ class KollaWorker(object):
             self.temp_dir = tempfile.mkdtemp(prefix='kolla-' + ts)
             self.working_dir = os.path.join(self.temp_dir, 'docker')
         self.copy_dir(self.images_dir, self.working_dir)
+        # NOTE(pzhang): contain yourself docker file template?
         for dir in self.conf.docker_dir:
             self.copy_dir(dir, self.working_dir)
         self.copy_apt_files()
@@ -887,6 +899,7 @@ class KollaWorker(object):
                 template_name)
 
             template = env.get_template(tpl_path)
+            #NOTE(pzhang): Path to template override file
             if self.conf.template_override:
                 tpl_dict = self._merge_overrides(self.conf.template_override)
                 template_name = os.path.basename(list(tpl_dict.keys())[0])
@@ -940,6 +953,8 @@ class KollaWorker(object):
 
         if self.regex:
             filter_ += self.regex
+        # NOTE(pzhang): important: we can use profile to control to build what images
+        # infra, main, aux, default, gate
         elif self.conf.profile:
             for profile in self.conf.profile:
                 if profile not in self.conf.profiles:
@@ -1071,6 +1086,13 @@ class KollaWorker(object):
                 self.image_statuses_skipped)
 
     def build_image_list(self):
+        """
+        NOTE(pzhang): this function do things:
+        1. finds image dependencies by 'FROM' in docker file
+        2. resolves each images installation methods(local, url, git) of 
+           main service, plugins, additions.
+        3. generates a image list 
+        """
         def process_source_installation(image, section):
             installation = dict()
             # NOTE(jeffrey4l): source is not needed when the type is None
@@ -1088,13 +1110,13 @@ class KollaWorker(object):
 
         all_sections = (set(six.iterkeys(self.conf._groups)) |
                         set(self.conf.list_all_sections()))
-
         for path in self.docker_build_paths:
             # Reading parent image name
             with open(os.path.join(path, 'Dockerfile')) as f:
                 content = f.read()
 
             image_name = os.path.basename(path)
+            #(NOTE)pzhang: important name,it will be use as Docker REPOSITORY name and TAG
             canonical_name = (self.namespace + '/' + self.image_prefix +
                               image_name + ':' + self.tag)
             parent_search_pattern = re.compile(r'^FROM.*$', re.MULTILINE)
@@ -1104,6 +1126,7 @@ class KollaWorker(object):
             else:
                 parent_name = ''
             del match
+            #NOTE(pzhang): we create a image object here
             image = Image(image_name, canonical_name, path,
                           parent_name=parent_name,
                           logger=utils.make_a_logger(self.conf, image_name),
@@ -1115,6 +1138,7 @@ class KollaWorker(object):
                 if image.name not in self.conf._groups:
                     self.conf.register_opts(common_config.get_source_opts(),
                                             image.name)
+                # NOTE(pzhang): for main service installation
                 image.source = process_source_installation(image, image.name)
                 for plugin in [match.group(0) for match in
                                (re.search('^{}-plugin-.+'.format(image.name),
@@ -1128,6 +1152,7 @@ class KollaWorker(object):
                     except cfg.DuplicateOptError:
                         LOG.debug('Plugin %s already registered in config',
                                   plugin)
+                    # NOTE(pzhang): for plugin installation
                     image.plugins.append(
                         process_source_installation(image, plugin))
                 for addition in [
@@ -1142,6 +1167,7 @@ class KollaWorker(object):
                     except cfg.DuplicateOptError:
                         LOG.debug('Addition %s already registered in config',
                                   addition)
+                    # NOTE(pzhang): for addition installation
                     image.additions.append(
                         process_source_installation(image, addition))
 
@@ -1258,6 +1284,7 @@ def run_build():
     kolla.find_dockerfiles()
     kolla.create_dockerfiles()
 
+    # NOTE(pzhang): Don't build images. Generate Dockerfile only
     if conf.template_only:
         LOG.info('Dockerfiles are generated in %s', kolla.working_dir)
         return
@@ -1265,10 +1292,12 @@ def run_build():
     # We set the atime and mtime to 0 epoch to preserve allow the Docker cache
     # to work like we want. A different size or hash will still force a rebuild
     kolla.set_time()
-
     if conf.save_dependency:
+        # NOTE(pzhang): build image object
         kolla.build_image_list()
+        # NOTE(pzhang): find paranet, and children of each image
         kolla.find_parents()
+        # NOTE(pzhang) use conf.profile and regx to filter all images
         kolla.filter_images()
         kolla.save_dependency(conf.save_dependency)
         LOG.info('Docker images dependency are saved in %s',
@@ -1290,9 +1319,11 @@ def run_build():
     push_queue = six.moves.queue.Queue()
     queue = kolla.build_queue(push_queue)
     workers = []
+    import pdb; pdb.set_trace()
 
     with join_many(workers):
         try:
+            # NOTE(pzhang): The number of threads to use while building.
             for x in six.moves.range(conf.threads):
                 worker = WorkerThread(conf, queue)
                 worker.setDaemon(True)
