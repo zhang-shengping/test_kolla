@@ -384,10 +384,12 @@ class BuildTask(DockerTask):
                     PushTask(self.conf, self.image),
                     self.push_queue),
             ])
+        # NOTE(pzhang): we append children image to the followups
         if self.image.children and self.success:
             for image in self.image.children:
                 if image.status == STATUS_UNMATCHED:
                     continue
+                # NOTE(pzhang): BuidlTask will continue to craeting followups dynamically
                 followups.append(BuildTask(self.conf, image, self.push_queue))
         return followups
 
@@ -623,10 +625,14 @@ class WorkerThread(threading.Thread):
         self.should_stop = False
 
     def run(self):
+        # NOTE(pzhang): should_stop is used to manage thread stop
+        # if KeyIntepretr exception happens
         while not self.should_stop:
             # NOTE(pzhang): task is object of BuildTask
             task = self.queue.get()
+            # NOTE(pzhang): tombstone is used to manage task stop
             if task is self.tombstone:
+                # #NOTE(pzhang): tombstone is a signal in queue
                 # Ensure any other threads also get the tombstone.
                 self.queue.put(task)
                 break
@@ -643,12 +649,15 @@ class WorkerThread(threading.Thread):
                     except Exception:
                         LOG.exception('Unhandled error when running %s',
                                       task.name)
+                     
                     # try again...
                     task.reset()
                 if task.success and not self.should_stop:
                     for next_task in task.followups:
                         LOG.info('Added next task %s to queue',
                                  next_task.name)
+                        # NOTE(pzhang): we put followup task in the same queue
+                        # the parent image has already built
                         self.queue.put(next_task)
             finally:
                 self.queue.task_done()
@@ -1324,6 +1333,8 @@ def run_build():
     with join_many(workers):
         try:
             # NOTE(pzhang): The number of threads to use while building.
+            # NOTE(pzhang): all threads operate one main queue
+            # NOTE(pzhang): the queue is thread safe
             for x in six.moves.range(conf.threads):
                 worker = WorkerThread(conf, queue)
                 worker.setDaemon(True)
@@ -1337,13 +1348,17 @@ def run_build():
                 workers.append(worker)
 
             # sleep until queue is empty
+            # NOTE(pzhang): https://stackoverflow.com/questions/36658531/python-queue-count-of-unfinished-tasks
+            # make sure alll the tasks are done
             while queue.unfinished_tasks or push_queue.unfinished_tasks:
                 time.sleep(3)
 
             # ensure all threads exited happily
+            # NOTE(pzhang): put on termination task in the queue, to break down the task chain
             push_queue.put(WorkerThread.tombstone)
             queue.put(WorkerThread.tombstone)
         except KeyboardInterrupt:
+            # NOTE(pzhnag) if exception happens, stop all the thread
             for w in workers:
                 w.should_stop = True
             push_queue.put(WorkerThread.tombstone)
