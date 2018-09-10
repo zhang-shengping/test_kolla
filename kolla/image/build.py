@@ -369,6 +369,7 @@ class BuildTask(DockerTask):
         return 'BuildTask(%s)' % self.image.name
 
     def run(self):
+        import pdb; pdb.set_trace()
         self.builder(self.image)
         if self.image.status in (STATUS_BUILT, STATUS_SKIPPED):
             self.success = True
